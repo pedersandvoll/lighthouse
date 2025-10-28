@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/viper"
 )
 
@@ -15,21 +16,28 @@ type Config struct {
 	Services []Service `mapstructure:"services"`
 }
 
-func Get() (*Config, error) {
+func Get(conf *Config, refreshChan chan<- struct{}) error {
 	viper.SetConfigName("config")
 	viper.AddConfigPath(".")
 	viper.SetConfigType("yaml")
 
 	err := viper.ReadInConfig()
 	if err != nil {
-		return nil, fmt.Errorf("fatal error config file: %w", err)
+		return fmt.Errorf("fatal error config file: %w", err)
 	}
 
-	var config Config
-	err = viper.Unmarshal(&config)
+	viper.OnConfigChange(func(e fsnotify.Event) {
+		_ = viper.Unmarshal(conf)
+		if refreshChan != nil {
+			refreshChan <- struct{}{}
+		}
+	})
+	viper.WatchConfig()
+	err = viper.Unmarshal(&conf)
+
 	if err != nil {
-		return nil, fmt.Errorf("unable to decode config: %w", err)
+		return fmt.Errorf("unable to decode config: %w", err)
 	}
 
-	return &config, nil
+	return nil
 }
