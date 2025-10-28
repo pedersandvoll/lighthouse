@@ -59,6 +59,26 @@ func (s *SystemdClient) SubscribeUnits(resultMap *map[string]*dbus.UnitStatus, e
 	}()
 }
 
+func (s *SystemdClient) UnitsCleanup(unitsMap *map[string]*dbus.UnitStatus, units *[]config.Service, duration time.Duration) {
+	go func() {
+		ticker := time.NewTicker(duration)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			validUnits := make(map[string]struct{}, len(*units))
+			for _, unit := range *units {
+				validUnits[unit.Name] = struct{}{}
+			}
+
+			for name := range *unitsMap {
+				if _, exists := validUnits[name]; !exists {
+					delete(*unitsMap, name)
+				}
+			}
+		}
+	}()
+}
+
 func (s *SystemdClient) GetUnitStatus(unit string) (*dbus.UnitStatus, error) {
 	units, err := s.Conn.ListUnitsByNamesContext(s.Ctx, []string{unit})
 	if err != nil {
