@@ -9,11 +9,6 @@ import (
 	"github.com/pedersandvoll/lighthouse/internal/config"
 )
 
-type SystemdClient struct {
-	Conn *dbus.Conn
-	Ctx  context.Context
-}
-
 func Connect() (*SystemdClient, error) {
 	ctx := context.Background()
 	conn, err := dbus.NewSystemConnectionContext(ctx)
@@ -31,7 +26,23 @@ func (s *SystemdClient) Close() {
 	s.Conn.Close()
 }
 
-func (s *SystemdClient) SubscribeUnits(resultMap *map[string]*dbus.UnitStatus, errChan chan<- error, refreshChan <-chan struct{}, duration time.Duration, units *[]config.Service) {
+func Init(timePtr *int, conf *config.Config, refreshChan *chan struct{}) (*SystemdClient, SystemdState, error) {
+	s, err := Connect()
+	if err != nil {
+		return nil, SystemdState{}, fmt.Errorf("could not connect to systemd: %w", err)
+	}
+
+	units := make(map[string]*UnitStatus)
+	errChan := make(chan error)
+	duration := time.Second * time.Duration(*timePtr)
+
+	s.SubscribeUnits(&units, errChan, *refreshChan, duration, &conf.Services)
+	s.UnitsCleanup(&units, &conf.Services, duration/2)
+
+	return s, SystemdState{ErrChan: &errChan, Units: &units, Duration: duration}, nil
+}
+
+func (s *SystemdClient) SubscribeUnits(resultMap *map[string]*UnitStatus, errChan chan<- error, refreshChan <-chan struct{}, duration time.Duration, units *[]config.Service) {
 	unitStatuses, errs := s.Conn.SubscribeUnits(duration)
 
 	go func() {
@@ -40,14 +51,18 @@ func (s *SystemdClient) SubscribeUnits(resultMap *map[string]*dbus.UnitStatus, e
 			case statuses := <-unitStatuses:
 				for _, unit := range *units {
 					if status, ok := statuses[unit.SystemdUnit]; ok {
-						(*resultMap)[unit.Name] = status
+						(*resultMap)[unit.Name] = &UnitStatus{UnitStatus: status, Available: true}
+					} else {
+						(*resultMap)[unit.Name] = &UnitStatus{UnitStatus: nil, Available: false}
 					}
 				}
 			case <-refreshChan:
 				for _, unit := range *units {
 					status, _ := s.GetUnitStatus(unit.SystemdUnit)
 					if status != nil {
-						(*resultMap)[unit.Name] = status
+						(*resultMap)[unit.Name] = &UnitStatus{UnitStatus: status, Available: true}
+					} else {
+						(*resultMap)[unit.Name] = &UnitStatus{UnitStatus: nil, Available: false}
 					}
 				}
 			case err := <-errs:
@@ -59,7 +74,7 @@ func (s *SystemdClient) SubscribeUnits(resultMap *map[string]*dbus.UnitStatus, e
 	}()
 }
 
-func (s *SystemdClient) UnitsCleanup(unitsMap *map[string]*dbus.UnitStatus, units *[]config.Service, duration time.Duration) {
+func (s *SystemdClient) UnitsCleanup(unitsMap *map[string]*UnitStatus, units *[]config.Service, duration time.Duration) {
 	go func() {
 		ticker := time.NewTicker(duration)
 		defer ticker.Stop()
